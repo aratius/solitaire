@@ -1,10 +1,9 @@
-// Firebaseコンソールの「プロジェクトの設定 > マイアプリ(Web)」の firebaseConfig をここに貼る。
-// これは公開されても問題ない識別子です(守るのは Firestore のルールとログイン)。
-// null のままだとランキング機能は非表示になり、ゲームはローカル保存だけで動きます。
-export const firebaseConfig = null;
-/* 例:
+// Firebase web config. These are public identifiers; Firestore rules and Google sign-in protect the data.
 export const firebaseConfig = {
-  apiKey: '...', authDomain: '<project>.firebaseapp.com', projectId: '<project>',
-  storageBucket: '<project>.firebasestorage.app', messagingSenderId: '...', appId: '...',
+  apiKey: "AIzaSyA4UzrG7FblDgPkpnWSFFSsVSuINHUeWfM",
+  authDomain: "solitaire-ranking.firebaseapp.com",
+  projectId: "solitaire-ranking",
+  storageBucket: "solitaire-ranking.firebasestorage.app",
+  messagingSenderId: "91366496455",
+  appId: "1:91366496455:web:946b714cae0de5363dc6e2",
 };
-*/
