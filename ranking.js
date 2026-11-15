@@ -1,6 +1,7 @@
-// 日替わりランキング(Firebase Auth の Google ログイン + Firestore)。
-// ゲーム本体から動的 import されるので、オフラインや未設定でもゲームは動く。
+// Rankings (Firebase anonymous auth + Firestore). Loaded lazily by the game, so the game still works offline or unconfigured.
+// One document per player per day: scores/{uid}_{day}. Week/month are stored on the document so each view is a plain query.
 import { firebaseConfig } from './firebase-config.js';
+import { monthKey, weekStart, rankRows, rankIn } from './periods.js';
 
 const V = '10.14.1';
 const CDN = `https://www.gstatic.com/firebasejs/${V}`;
@@ -18,45 +19,44 @@ async function load() {
   return mod;
 }
 
-export async function onAuth(cb) {
-  const m = await load();
-  m.A.onAuthStateChanged(m.auth, cb);
+// Anonymous sign-in happens silently the first time someone posts. There is no login screen.
+async function ensureUser(m) {
+  await m.auth.authStateReady();
+  return m.auth.currentUser || (await m.A.signInAnonymously(m.auth)).user;
 }
-export async function signIn(beforeRedirect) {
+export async function me() {
   const m = await load();
-  const provider = new m.A.GoogleAuthProvider();
-  try {
-    await m.A.signInWithPopup(m.auth, provider);
-  } catch (e) {
-    if (e.code === 'auth/popup-blocked' || e.code === 'auth/operation-not-supported-in-this-environment') {
-      beforeRedirect?.(); // ページが遷移するので、中断される投稿を保存しておく
-      await m.A.signInWithRedirect(m.auth, provider);
-    } else if (e.code !== 'auth/popup-closed-by-user' && e.code !== 'auth/cancelled-popup-request') throw e;
-  }
+  await m.auth.authStateReady();
+  return m.auth.currentUser ? m.auth.currentUser.uid : null;
 }
-export async function signOut() { const m = await load(); await m.A.signOut(m.auth); }
 
-// 1日1人1件。その日の自己ベストより高いときだけ更新する。
-export async function submitScore(dateKey, e) {
+// Posts today's best. Only replaces an earlier post for the same day when the new score is higher.
+export async function submitScore(day, name, e) {
   const m = await load();
-  const u = m.auth.currentUser;
-  if (!u) return { status: 'signin' };
-  const ref = m.F.doc(m.db, 'daily', dateKey, 'scores', u.uid);
+  const u = await ensureUser(m);
+  const ref = m.F.doc(m.db, 'scores', `${u.uid}_${day}`);
   const snap = await m.F.getDoc(ref);
   if (snap.exists() && snap.data().score >= e.score) return { status: 'kept', best: snap.data().score };
   await m.F.setDoc(ref, {
-    uid: u.uid, name: (u.displayName || 'Player').slice(0, 24),
-    score: e.score, time: e.time, moves: e.moves, at: m.F.serverTimestamp(),
+    uid: u.uid, name, score: e.score, time: e.time, moves: e.moves,
+    day, week: weekStart(day), month: monthKey(day), at: m.F.serverTimestamp(),
   });
   return { status: 'saved', best: e.score };
 }
-export async function topScores(dateKey, n = 20) {
+
+// kind: 'day' | 'week' | 'month' | 'all'. `day` is today's JST date key; week and month are the ones that contain it.
+async function fetchRows(kind, day) {
   const m = await load();
-  const q = m.F.query(m.F.collection(m.db, 'daily', dateKey, 'scores'), m.F.orderBy('score', 'desc'), m.F.limit(n));
+  const col = m.F.collection(m.db, 'scores');
+  const q = kind === 'day' ? m.F.query(col, m.F.where('day', '==', day), m.F.limit(300))
+    : kind === 'week' ? m.F.query(col, m.F.where('week', '==', weekStart(day)), m.F.limit(500))
+    : kind === 'month' ? m.F.query(col, m.F.where('month', '==', monthKey(day)), m.F.limit(500))
+    : m.F.query(col, m.F.orderBy('score', 'desc'), m.F.limit(200));
   return (await m.F.getDocs(q)).docs.map((d) => d.data());
 }
-export async function rankOf(dateKey, score) {
-  const m = await load();
-  const q = m.F.query(m.F.collection(m.db, 'daily', dateKey, 'scores'), m.F.where('score', '>', score));
-  return (await m.F.getCountFromServer(q)).data().count + 1;
+export async function topScores(kind, day, n = 30) {
+  return rankRows(await fetchRows(kind, day), n);
+}
+export async function rankOf(kind, day, score, uid) {
+  return rankIn(await fetchRows(kind, day), score, uid);
 }

@@ -3,25 +3,31 @@ service cloud.firestore {
   match /databases/{database}/documents {
 
     function validEntry(d, uid) {
-      return d.keys().hasOnly(['uid', 'name', 'score', 'time', 'moves', 'at'])
+      return d.keys().hasOnly(['uid', 'name', 'score', 'time', 'moves', 'day', 'week', 'month', 'at'])
         && d.uid == uid
-        && d.name is string && d.name.size() >= 1 && d.name.size() <= 24
+        && d.name is string && d.name.size() >= 1 && d.name.size() <= 16
         && d.score is int && d.time is int && d.moves is int
         && d.time >= 20 && d.time <= 86400
         && d.moves >= 52 && d.moves <= 5000
-        // スコア式: max(0, 10000 - 秒×10 - 手数×20)
+        && d.day is string && d.day.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && d.week is string && d.week.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && d.month is string && d.month == d.day[0:7]
+        // score formula: max(0, 10000 - sec*10 - moves*20)
         && (d.score == 10000 - d.time * 10 - d.moves * 20
             || (d.score == 0 && 10000 - d.time * 10 - d.moves * 20 <= 0))
         && d.at == request.time;
     }
 
-    match /daily/{date}/scores/{uid} {
+    // One document per player per day. Anyone can read; only the owner can write, and a post can only be improved.
+    match /scores/{id} {
       allow read: if true;
-      allow create: if request.auth != null && request.auth.uid == uid
-        && date.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
-        && validEntry(request.resource.data, uid);
-      allow update: if request.auth != null && request.auth.uid == uid
-        && validEntry(request.resource.data, uid)
+      allow create: if request.auth != null
+        && id == request.auth.uid + '_' + request.resource.data.day
+        && validEntry(request.resource.data, request.auth.uid);
+      allow update: if request.auth != null
+        && resource.data.uid == request.auth.uid
+        && validEntry(request.resource.data, request.auth.uid)
+        && request.resource.data.day == resource.data.day
         && request.resource.data.score > resource.data.score;
       allow delete: if false;
     }

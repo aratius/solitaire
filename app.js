@@ -4,14 +4,14 @@ import {
 } from './logic.js';
 import { solve } from './solver.js';
 import { firebaseConfig } from './firebase-config.js';
+import { periodLabel, fmtDay } from './periods.js';
 
 const $ = (s) => document.querySelector(s);
 const SYM = ['♠', '♥', '♦', '♣'];
 const LBL = ['', 'A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
 const KEY = 'solitaire.v1';
-const PENDING = 'solitaire.pending';
+const NICK = 'solitaire.nick';
 const RANK_ON = !!(firebaseConfig && firebaseConfig.apiKey);
-const AUTO_AUTH = !!(firebaseConfig && firebaseConfig.autoAuth); // ログイン不要の環境(Claudeページ内DB)ではアカウント行を出さない
 
 // ---------- 保存データ ----------
 const defaults = () => ({
@@ -341,9 +341,11 @@ function win() {
   if (rec.time) st.bestTime = sec;
   if (rec.moves) st.bestMoves = moves;
   if (rec.score) st.bestScore = score;
+  let dailyBest = false; // 今日の自己ベストを更新したか(ランキング投稿を聞く条件)
   if (mode === 'daily') {
     const prev = st.daily[dateKey];
-    if (!prev || score > prev.score) st.daily[dateKey] = { score, time: Math.floor(sec), moves };
+    dailyBest = !prev || score > prev.score;
+    if (dailyBest) st.daily[dateKey] = { score, time: Math.floor(sec), moves };
     const keys = Object.keys(st.daily).sort();
     while (keys.length > 60) delete st.daily[keys.shift()];
   }
@@ -351,7 +353,7 @@ function win() {
   updateHud();
   sfx.win(); buzz(40);
   cascade();
-  setTimeout(() => showResult(sec, moves, score, rec), 2000);
+  setTimeout(() => showResult(sec, moves, score, rec, dailyBest), 2000);
 }
 
 function cascade() {
@@ -397,94 +399,86 @@ function stuck() {
   }, 700);
 }
 
-function showResult(sec, moves, score, rec) {
+function showResult(sec, moves, score, rec, dailyBest) {
   const flag = (b) => (b ? '<i class="new">NEW</i> ' : '');
   const m = mode === 'daily' ? `Daily ${dateKey}` : 'Random';
+  const canPost = RANK_ON && mode === 'daily' && !assisted && dailyBest;
   sheet(`<h2>You Win!</h2><p>${m}</p><div class="big">${score}</div>
     <div class="grid"><div>Time<b>${flag(rec.time)}${fmt(sec * 1000)}</b></div><div>Moves<b>${flag(rec.moves)}${moves}</b></div></div>
-    ${RANK_ON && mode === 'daily' && !assisted ? '<div class="rankline" id="rank-line"></div>' : ''}
+    ${canPost ? '<div class="post" id="post"></div>' : ''}
     <div class="btns"><button data-act="new">Play Again</button><button class="sub" data-act="menu">View Stats</button></div>`, {
     new: () => startNew(), menu: () => openMenu(),
   });
-  if (mode === 'daily' && !assisted) fillRankLine(score, sec, moves);
+  if (canPost) mountPost({ day: dateKey, score, time: Math.floor(sec), moves });
 }
 
 // ---------- ランキング(Firebase。未設定なら非表示) ----------
-let R = null, authUser = null;
+let R = null, rankToken = 0;
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 async function ranking() {
   if (!RANK_ON) return null;
   if (!R) { try { R = await import('./ranking.js'); } catch { R = null; } }
   return R;
 }
-async function initRanking() {
-  const rk = await ranking();
-  if (!rk) return;
+const savedNick = () => { try { return localStorage.getItem(NICK) || ''; } catch { return ''; } };
+
+// 今日の自己ベストが出たときだけ「投稿しますか?」を出す。投稿のたびにニックネームを付ける(前回の名前が入る)
+function mountPost(entry, msg) {
+  const box = $('#post');
+  if (!box) return;
+  box.innerHTML = `<p>${msg || 'New best for today! Post it to the ranking?'}</p>
+    <input id="nick" type="text" maxlength="16" placeholder="Nickname" autocomplete="off" autocapitalize="off" spellcheck="false" value="${esc(savedNick())}">
+    <div class="postbtns"><button data-post="yes">Post</button><button class="sub" data-post="no">Not now</button></div>`;
+  box.querySelector('[data-post=yes]').addEventListener('click', () => postScore(entry));
+  box.querySelector('[data-post=no]').addEventListener('click', () => box.remove());
+}
+async function postScore(entry) {
+  const box = $('#post'), input = $('#nick');
+  if (!box || !input) return;
+  const name = input.value.trim().replace(/\s+/g, ' ').slice(0, 16);
+  if (!name) { input.focus(); toast('Enter a nickname'); return; }
+  try { localStorage.setItem(NICK, name); } catch { /* 無視 */ }
+  box.innerHTML = '<div class="spin"></div>';
   try {
-    await rk.onAuth(async (u) => {
-      authUser = u;
-      const raw = localStorage.getItem(PENDING);
-      if (u && raw) { // リダイレクトログインで中断した投稿の続き
-        try {
-          const p = JSON.parse(raw);
-          localStorage.removeItem(PENDING);
-          await rk.submitScore(p.dateKey, { score: p.score, time: p.time, moves: p.moves });
-          toast('Score submitted');
-        } catch { /* 次回に持ち越さない */ }
-      }
-    });
-  } catch { /* オフライン等 */ }
-}
-async function doSignIn(after, beforeRedirect) {
-  const rk = await ranking();
-  if (!rk) { toast('Ranking is unavailable'); return; }
-  try { await rk.signIn(beforeRedirect); } catch { toast('Sign-in failed'); return; }
-  after?.();
-}
-async function fillRankLine(score, sec, moves) {
-  const rk = await ranking();
-  const set = (html) => { const e = $('#rank-line'); if (e) e.innerHTML = html; return e; };
-  if (!rk || !rk.enabled) return;
-  const entry = { score, time: Math.floor(sec), moves };
-  const submit = async () => {
-    set('Submitting to the daily ranking…');
-    try {
-      const r = await rk.submitScore(dateKey, entry);
-      const best = Math.max(score, r.best ?? score);
-      const n = await rk.rankOf(dateKey, best);
-      set(r.status === 'kept' ? `Your best today stays: ${best} · Rank #${n}` : `Daily rank #${n}`);
-    } catch { set("Couldn't reach the ranking. Try again later."); }
-  };
-  if (!authUser && AUTO_AUTH) { set("Ranking isn't available for this account."); return; }
-  if (!authUser) {
-    const el = set('<button class="sub" data-act="signin">Sign in with Google to submit</button>');
-    el?.querySelector('[data-act=signin]')?.addEventListener('click', () => {
-      const keep = () => { try { localStorage.setItem(PENDING, JSON.stringify({ dateKey, ...entry })); } catch { /* 無視 */ } };
-      doSignIn(() => { if (authUser) submit(); }, keep);
-    });
-    return;
+    const rk = await ranking();
+    if (!rk) throw new Error('unavailable');
+    const r = await rk.submitScore(entry.day, name, entry);
+    const best = Math.max(entry.score, r.best ?? entry.score);
+    const n = await rk.rankOf('day', entry.day, best, await rk.me());
+    box.innerHTML = `<p>${r.status === 'kept' ? `Your best today (${best}) was already posted` : `Posted as <b>${esc(name)}</b>`} · Today #${n}</p>
+      <button class="sub" data-post="rank">View Rankings</button>`;
+    box.querySelector('[data-post=rank]').addEventListener('click', () => openRanking('day'));
+  } catch {
+    mountPost(entry, "Couldn't post. Check your connection and try again.");
   }
-  submit();
 }
-async function openRanking() {
+
+const TABS = [['day', 'Day'], ['week', 'Week'], ['month', 'Month'], ['all', 'All']];
+async function openRanking(kind = 'day') {
   const rk = await ranking();
   if (!rk) return;
+  const token = ++rankToken;
   const day = todayKey();
-  sheet(`<h2>Daily Ranking</h2><p>${day} (JST)</p><div class="spin"></div><div class="btns"><button class="sub" data-act="close">Close</button></div>`, { close: () => closeSheet() }, true);
-  let rows;
-  try { rows = await rk.topScores(day, 20); } catch {
-    sheet(`<h2>Daily Ranking</h2><p>Couldn't load the ranking right now.</p><div class="btns"><button data-act="close">Close</button></div>`, { close: () => closeSheet() }, true);
+  const acts = {
+    close: () => closeSheet(),
+    play: () => { store.settings.mode = 'daily'; persist(); confirmNew(() => startNew()); },
+  };
+  TABS.forEach(([k]) => { acts[`t-${k}`] = () => openRanking(k); });
+  const frame = (body) => `<h2>Ranking</h2><p>${periodLabel(kind, day)}</p>
+    <div class="seg tabs">${TABS.map(([k, l]) => `<button${k === kind ? ' class="on"' : ''} data-act="t-${k}">${l}</button>`).join('')}</div>
+    ${body}
+    <div class="btns"><button data-act="play">${mode === 'daily' ? 'New Daily Game' : "Play Today's Daily"}</button><button class="sub" data-act="close">Close</button></div>`;
+  sheet(frame('<div class="spin"></div>'), acts, true);
+  let rows, me;
+  try { [rows, me] = await Promise.all([rk.topScores(kind, day, 30), rk.me()]); } catch {
+    if (token === rankToken) sheet(frame("<p>Couldn't load the ranking right now.</p>"), acts, true);
     return;
   }
-  const me = authUser?.uid;
+  if (token !== rankToken) return; // 別のタブに切り替わった
   const list = rows.length
-    ? rows.map((r, i) => `<div class="rk${r.uid === me ? ' me' : ''}"><b>${i + 1}</b><span>${esc(r.name)}<small>${fmt(r.time * 1000)} · ${r.moves} moves</small></span><b>${r.score}</b></div>`).join('')
-    : '<p>No scores yet today. Be the first!</p>';
-  sheet(`<h2>Daily Ranking</h2><p>${day} (JST)</p><div class="rank-list">${list}</div>
-    <div class="btns"><button data-act="play">${mode === 'daily' ? 'New Daily Game' : 'Play Today\'s Daily'}</button><button class="sub" data-act="close">Close</button></div>`, {
-    play: () => { store.settings.mode = 'daily'; persist(); confirmNew(() => startNew()); },
-    close: () => closeSheet(),
-  }, true);
+    ? rows.map((r, i) => `<div class="rk${r.uid === me ? ' me' : ''}"><b>${i + 1}</b><span>${esc(r.name)}<small>${fmt(r.time * 1000)} · ${r.moves} moves${kind === 'day' ? '' : ` · ${fmtDay(r.day)}`}</small></span><b>${r.score}</b></div>`).join('')
+    : `<p>No scores ${kind === 'all' ? 'yet' : 'in this period yet'}. Be the first!</p>`;
+  sheet(frame(`<div class="rank-list">${list}</div>`), acts, true);
 }
 
 // ---------- リタイヤ(自動解答) ----------
@@ -622,11 +616,8 @@ function openMenu() {
     <div class="row"><span>Mode</span><span class="seg"><button${seg(se.mode === 'random')} data-act="m-random">Random</button><button${seg(se.mode === 'daily')} data-act="m-daily">Daily</button></span></div>
     <div class="row"><span>Sound</span><span class="seg"><button${seg(se.sound)} data-act="snd-on">On</button><button${seg(!se.sound)} data-act="snd-off">Off</button></span></div>
     <div class="row"><span>Haptics</span><span class="seg"><button${seg(se.vibrate)} data-act="vib-on">On</button><button${seg(!se.vibrate)} data-act="vib-off">Off</button></span></div>
-    ${RANK_ON && !AUTO_AUTH ? `<div class="row"><span>Account</span><span>${authUser ? `${esc(authUser.displayName || 'Signed in')} <button class="seg-btn" data-act="signout">Sign out</button>` : '<button class="seg-btn" data-act="signin">Sign in with Google</button>'}</span></div>` : ''}
-    <div class="btns" style="margin-top:10px">${RANK_ON ? '<button data-act="rank">Daily Ranking</button>' : ''}<button class="${RANK_ON ? 'sub' : ''}" data-act="close">Close</button></div>`, {
-    rank: () => openRanking(),
-    signin: () => doSignIn(() => openMenu()),
-    signout: async () => { const rk = await ranking(); await rk?.signOut(); authUser = null; openMenu(); },
+    <div class="btns" style="margin-top:10px">${RANK_ON ? '<button data-act="rank">Ranking</button>' : ''}<button class="${RANK_ON ? 'sub' : ''}" data-act="close">Close</button></div>`, {
+    rank: () => openRanking('day'),
     'm-random': () => setMode('random'), 'm-daily': () => setMode('daily'),
     'snd-on': () => { se.sound = true; persist(); unlockAudio(); openMenu(); },
     'snd-off': () => { se.sound = false; persist(); openMenu(); },
@@ -768,7 +759,6 @@ function boot() {
   }
 }
 requestAnimationFrame(boot);
-if (RANK_ON) initRanking();
 
 // テスト用フック
 window.__sol = { get state() { return state; }, get over() { return over; }, startNew, store: () => store };

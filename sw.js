@@ -1,5 +1,5 @@
-const CACHE = 'solitaire-v2';
-const ASSETS = ['./', './index.html', './style.css', './app.js', './logic.js', './solver.js', './solver-worker.js', './manifest.webmanifest',
+const CACHE = 'solitaire-v3';
+const ASSETS = ['./', './index.html', './style.css', './app.js', './logic.js', './solver.js', './solver-worker.js', './periods.js', './manifest.webmanifest',
   './icons/icon.svg', './icons/icon-192.png', './icons/icon-512.png', './icons/icon-maskable-512.png', './icons/apple-touch-icon.png'];
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(ASSETS)).then(() => self.skipWaiting()));
@@ -11,7 +11,7 @@ self.addEventListener('activate', (e) => {
 self.addEventListener('fetch', (e) => {
   if (e.request.method !== 'GET') return;
   e.respondWith(
-    fetch(e.request).then((res) => {
+    fetch(e.request, { cache: 'no-cache' }).then((res) => {
       const copy = res.clone();
       if (res.ok && new URL(e.request.url).origin === location.origin) caches.open(CACHE).then((c) => c.put(e.request, copy));
       return res;

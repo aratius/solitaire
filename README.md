@@ -20,6 +20,8 @@
 - デイリー: 日付シードで全員同じ配置（将来のサーバー投稿用）
 
 ## ランキング
-- ranking.js / firebase-config.js / firestore.rules … 日替わりランキング(Firebase Auth + Firestore)。`firebase-config.js` が null の間は非表示。
-- 公開と設定の手順は SETUP.md。
-- 日替わりは日本時間(JST)の日付をシードにします。
+- ranking.js / periods.js / firebase-config.js / firestore.rules … ランキング(Firebase 匿名認証 + Firestore)。`firebase-config.js` が null の間は非表示。
+- デイリーモードでその日の自己ベストが出たときだけ「投稿しますか?」と聞く。投稿のたびにニックネームを付ける(前回の名前が入る)。
+- 日・週(月曜始まり)・月・全期間のランキングを見られる。時刻は日本時間。
+- 1人1日1件。同じ日はスコアが上がったときだけ更新される。
+- 公開と設定の手順は SETUP.md(Googleログインは使わなくなった。Authentication は「匿名」を有効にする)。
