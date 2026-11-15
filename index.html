@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="theme-color" content="#0f5132">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Solitaire">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="stylesheet" href="style.css">
+<title>Solitaire</title>
+</head>
+<body>
+<div id="app">
+  <header id="bar">
+    <div class="stat"><span class="lbl">TIME</span><span id="time">0:00</span></div>
+    <div class="stat"><span class="lbl">MOVES</span><span id="moves">0</span></div>
+    <div class="stat"><span class="lbl">SCORE</span><span id="score">10000</span></div>
+    <button id="btn-menu" aria-label="Menu">≡</button>
+  </header>
+  <main id="board">
+    <div class="slot" id="slot-stock"><span class="recycle">↻</span></div>
+    <div class="slot" id="slot-waste"></div>
+    <div class="slot found" data-pile="0"><span>♠</span></div>
+    <div class="slot found red" data-pile="1"><span>♥</span></div>
+    <div class="slot found red" data-pile="2"><span>♦</span></div>
+    <div class="slot found" data-pile="3"><span>♣</span></div>
+    <div id="cards"></div>
+  </main>
+  <footer id="foot">
+    <button id="btn-undo">↶ Undo</button>
+    <button id="btn-giveup">Give Up</button>
+    <button id="btn-new">New Game</button>
+    <div id="demo"><span id="demo-info"></span><button id="btn-speed">1×</button><button id="btn-stop">Stop</button></div>
+  </footer>
+</div>
+
+<div id="modal" class="hidden" role="dialog" aria-modal="true">
+  <div class="sheet" id="sheet"></div>
+</div>
+<div id="toast" class="hidden"></div>
+<script type="module" src="app.js"></script>
+</body>
+</html>
