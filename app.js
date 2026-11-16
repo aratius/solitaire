@@ -357,11 +357,11 @@ function win() {
   if (rec.moves) st.bestMoves = moves;
   if (rec.score) st.bestScore = score;
   let post = null; // 投稿する自己ベスト(今日の自己ベストが前回の投稿より良くなったときだけ)
-  if (mode === 'daily') {
+  { // ランキングは常にオン。モードに関係なく、その日(日本時間)の自己ベストを記録する
+    const day = todayKey();
     st.posted = st.posted || {};
-    const mine = { score, time: Math.floor(sec), moves };
-    st.daily[dateKey] = mergeBests(st.daily[dateKey], mine);
-    if (improved(st.daily[dateKey], st.posted[dateKey])) post = { day: dateKey, ...st.daily[dateKey] };
+    st.daily[day] = mergeBests(st.daily[day], { score, time: Math.floor(sec), moves });
+    if (improved(st.daily[day], st.posted[day])) post = { day, ...st.daily[day] };
     for (const o of [st.daily, st.posted]) { const keys = Object.keys(o).sort(); while (keys.length > 60) delete o[keys.shift()]; }
   }
   store.save = null; persist();
@@ -441,7 +441,7 @@ function stuck(proven) {
 function showResult(sec, moves, score, rec, post) {
   const flag = (b) => (b ? '<i class="new">NEW</i> ' : '');
   const m = mode === 'daily' ? `Daily ${dateKey}` : 'Random';
-  const canPost = RANK_ON && mode === 'daily' && !assisted && !!post;
+  const canPost = RANK_ON && !assisted && !!post;
   sheet(`<h2>You Win!</h2><p>${m}</p><div class="big">${score}</div>
     <div class="grid"><div>Time<b>${flag(rec.time)}${fmt(sec * 1000)}</b></div><div>Moves<b>${flag(rec.moves)}${moves}</b></div></div>
     ${canPost ? '<div class="post" id="post"></div>' : ''}
@@ -467,16 +467,15 @@ const savedNick = () => { try { return localStorage.getItem(NICK) || ''; } catch
 function mountPost(entry, msg) {
   const box = $('#post');
   if (!box) return;
-  box.innerHTML = `<p>${msg || 'New best for today! Pick a nickname to join the ranking.'}</p>
+  box.innerHTML = `<p>${msg || 'New best! Enter a nickname to join the ranking.'}</p>
     <input id="nick" type="text" maxlength="16" placeholder="Nickname" autocomplete="off" autocapitalize="off" spellcheck="false" value="${esc(savedNick())}">
-    <div class="postbtns"><button data-post="yes">Post</button><button class="sub" data-post="no">Not now</button></div>`;
+    <div class="postbtns"><button data-post="yes">Save to Ranking</button></div>`;
   box.querySelector('[data-post=yes]').addEventListener('click', () => {
     const name = $('#nick').value.trim().replace(/\s+/g, ' ').slice(0, 16);
     if (!name) { $('#nick').focus(); toast('Enter a nickname'); return; }
     try { localStorage.setItem(NICK, name); } catch { /* 無視 */ }
     postScore(entry, name);
   });
-  box.querySelector('[data-post=no]').addEventListener('click', () => box.remove());
 }
 async function postScore(entry, name) {
   const box = $('#post');
@@ -505,6 +504,25 @@ async function postScore(entry, name) {
     }
   }
 }
+
+// 投稿できていない自己ベストを後から必ず送る(通信失敗・アプリ終了・ニックネーム未入力の取りこぼし防止)
+let flushing = false;
+async function flushPosts() {
+  if (!RANK_ON || flushing || !savedNick()) return;
+  const st = store.stats; st.posted = st.posted || {};
+  flushing = true;
+  try {
+    for (const day of Object.keys(st.daily).sort()) {
+      if (!improved(st.daily[day], st.posted[day])) continue;
+      const rk = await ranking();
+      if (!rk) break;
+      const r = await rk.submitScore(day, savedNick(), st.daily[day]);
+      st.posted[day] = { ...r.best }; persist();
+    }
+  } catch { /* 次の機会に再送 */ } finally { flushing = false; }
+}
+window.addEventListener('online', flushPosts);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) flushPosts(); });
 
 const TABS = [['day', 'Day'], ['week', 'Week'], ['month', 'Month'], ['all', 'All']];
 const CATS = [['score', 'Score'], ['speed', 'Speed'], ['moves', 'Moves']];
@@ -687,7 +705,7 @@ function openMenu() {
     <div class="grid">
       <div>Played<b>${st.played}</b></div><div>Won<b>${st.won} (${rate}%)</b></div>
       <div>Best Score<b>${st.bestScore ?? '-'}</b></div><div>Best Time<b>${st.bestTime === null ? '-' : fmt(st.bestTime * 1000)}</b></div>
-      <div>Fewest Moves<b>${st.bestMoves ?? '-'}</b></div><div>Today's Daily<b>${d ? d.score : '-'}</b></div>
+      <div>Fewest Moves<b>${st.bestMoves ?? '-'}</b></div><div>Today's Best<b>${d ? d.score : '-'}</b></div>
     </div>
     <div class="row"><span>Mode</span><span class="seg"><button${seg(se.mode === 'random')} data-act="m-random">Random</button><button${seg(se.mode === 'daily')} data-act="m-daily">Daily</button></span></div>
     <div class="row"><span>Sound</span><span class="seg"><button${seg(se.sound)} data-act="snd-on">On</button><button${seg(!se.sound)} data-act="snd-off">Off</button></span></div>
@@ -851,6 +869,7 @@ function boot() {
   }
 }
 requestAnimationFrame(boot);
+setTimeout(flushPosts, 1500);
 
 // テスト用フック
 window.__sol = { get state() { return state; }, get over() { return over; }, startNew, checkDead, store: () => store };
