@@ -4,7 +4,7 @@ import {
 } from './logic.js';
 import { solve } from './solver.js';
 import { firebaseConfig } from './firebase-config.js';
-import { periodLabel, fmtDay } from './periods.js';
+import { periodLabel, fmtDay, mergeBests, improved } from './periods.js';
 
 const $ = (s) => document.querySelector(s);
 const SYM = ['♠', '♥', '♦', '♣'];
@@ -15,7 +15,7 @@ const RANK_ON = !!(firebaseConfig && firebaseConfig.apiKey);
 
 // ---------- 保存データ ----------
 const defaults = () => ({
-  stats: { played: 0, won: 0, bestTime: null, bestMoves: null, bestScore: null, daily: {} },
+  stats: { played: 0, won: 0, bestTime: null, bestMoves: null, bestScore: null, daily: {}, posted: {} },
   settings: { sound: true, vibrate: true, mode: 'random' },
   save: null,
 });
@@ -341,19 +341,19 @@ function win() {
   if (rec.time) st.bestTime = sec;
   if (rec.moves) st.bestMoves = moves;
   if (rec.score) st.bestScore = score;
-  let dailyBest = false; // 今日の自己ベストを更新したか(ランキング投稿を聞く条件)
+  let post = null; // 投稿する自己ベスト(今日の自己ベストが前回の投稿より良くなったときだけ)
   if (mode === 'daily') {
-    const prev = st.daily[dateKey];
-    dailyBest = !prev || score > prev.score;
-    if (dailyBest) st.daily[dateKey] = { score, time: Math.floor(sec), moves };
-    const keys = Object.keys(st.daily).sort();
-    while (keys.length > 60) delete st.daily[keys.shift()];
+    st.posted = st.posted || {};
+    const mine = { score, time: Math.floor(sec), moves };
+    st.daily[dateKey] = mergeBests(st.daily[dateKey], mine);
+    if (improved(st.daily[dateKey], st.posted[dateKey])) post = { day: dateKey, ...st.daily[dateKey] };
+    for (const o of [st.daily, st.posted]) { const keys = Object.keys(o).sort(); while (keys.length > 60) delete o[keys.shift()]; }
   }
   store.save = null; persist();
   updateHud();
   sfx.win(); buzz(40);
   cascade();
-  setTimeout(() => showResult(sec, moves, score, rec, dailyBest), 2000);
+  setTimeout(() => showResult(sec, moves, score, rec, post), 2000);
 }
 
 function cascade() {
@@ -399,17 +399,19 @@ function stuck() {
   }, 700);
 }
 
-function showResult(sec, moves, score, rec, dailyBest) {
+function showResult(sec, moves, score, rec, post) {
   const flag = (b) => (b ? '<i class="new">NEW</i> ' : '');
   const m = mode === 'daily' ? `Daily ${dateKey}` : 'Random';
-  const canPost = RANK_ON && mode === 'daily' && !assisted && dailyBest;
+  const canPost = RANK_ON && mode === 'daily' && !assisted && !!post;
   sheet(`<h2>You Win!</h2><p>${m}</p><div class="big">${score}</div>
     <div class="grid"><div>Time<b>${flag(rec.time)}${fmt(sec * 1000)}</b></div><div>Moves<b>${flag(rec.moves)}${moves}</b></div></div>
     ${canPost ? '<div class="post" id="post"></div>' : ''}
     <div class="btns"><button data-act="new">Play Again</button><button class="sub" data-act="menu">View Stats</button></div>`, {
     new: () => startNew(), menu: () => openMenu(),
   });
-  if (canPost) mountPost({ day: dateKey, score, time: Math.floor(sec), moves });
+  if (!canPost) return;
+  // Nickname is asked once. After that, a better personal best replaces the posted one automatically.
+  if (savedNick()) postScore(post, savedNick()); else mountPost(post);
 }
 
 // ---------- ランキング(Firebase。未設定なら非表示) ----------
@@ -422,39 +424,52 @@ async function ranking() {
 }
 const savedNick = () => { try { return localStorage.getItem(NICK) || ''; } catch { return ''; } };
 
-// 今日の自己ベストが出たときだけ「投稿しますか?」を出す。投稿のたびにニックネームを付ける(前回の名前が入る)
+// First time only: ask for a nickname.
 function mountPost(entry, msg) {
   const box = $('#post');
   if (!box) return;
-  box.innerHTML = `<p>${msg || 'New best for today! Post it to the ranking?'}</p>
+  box.innerHTML = `<p>${msg || 'New best for today! Pick a nickname to join the ranking.'}</p>
     <input id="nick" type="text" maxlength="16" placeholder="Nickname" autocomplete="off" autocapitalize="off" spellcheck="false" value="${esc(savedNick())}">
     <div class="postbtns"><button data-post="yes">Post</button><button class="sub" data-post="no">Not now</button></div>`;
-  box.querySelector('[data-post=yes]').addEventListener('click', () => postScore(entry));
+  box.querySelector('[data-post=yes]').addEventListener('click', () => {
+    const name = $('#nick').value.trim().replace(/\s+/g, ' ').slice(0, 16);
+    if (!name) { $('#nick').focus(); toast('Enter a nickname'); return; }
+    try { localStorage.setItem(NICK, name); } catch { /* 無視 */ }
+    postScore(entry, name);
+  });
   box.querySelector('[data-post=no]').addEventListener('click', () => box.remove());
 }
-async function postScore(entry) {
-  const box = $('#post'), input = $('#nick');
-  if (!box || !input) return;
-  const name = input.value.trim().replace(/\s+/g, ' ').slice(0, 16);
-  if (!name) { input.focus(); toast('Enter a nickname'); return; }
-  try { localStorage.setItem(NICK, name); } catch { /* 無視 */ }
+async function postScore(entry, name) {
+  const box = $('#post');
+  if (!box) return;
   box.innerHTML = '<div class="spin"></div>';
   try {
     const rk = await ranking();
     if (!rk) throw new Error('unavailable');
     const r = await rk.submitScore(entry.day, name, entry);
-    const best = Math.max(entry.score, r.best ?? entry.score);
-    const n = await rk.rankOf('day', entry.day, best, await rk.me());
-    box.innerHTML = `<p>${r.status === 'kept' ? `Your best today (${best}) was already posted` : `Posted as <b>${esc(name)}</b>`} · Today #${n}</p>
+    store.stats.posted = store.stats.posted || {};
+    store.stats.posted[entry.day] = { ...r.best }; persist();
+    const uid = await rk.me();
+    const [a, b, c] = await Promise.all([
+      rk.rankOf('day', entry.day, 'score', r.best.score, uid), rk.rankOf('day', entry.day, 'speed', r.best.time, uid),
+      rk.rankOf('day', entry.day, 'moves', r.best.moves, uid)]);
+    const box2 = $('#post');
+    if (!box2) return;
+    box2.innerHTML = `<p>Ranking updated as <b>${esc(name)}</b><br>Today: Score #${a} · Speed #${b} · Moves #${c}</p>
       <button class="sub" data-post="rank">View Rankings</button>`;
-    box.querySelector('[data-post=rank]').addEventListener('click', () => openRanking('day'));
+    box2.querySelector('[data-post=rank]').addEventListener('click', () => openRanking('day', 'score'));
   } catch {
-    mountPost(entry, "Couldn't post. Check your connection and try again.");
+    const box2 = $('#post');
+    if (box2) {
+      box2.innerHTML = '<p>Couldn\'t post. Check your connection.</p><button class="sub" data-post="retry">Try Again</button>';
+      box2.querySelector('[data-post=retry]').addEventListener('click', () => postScore(entry, name));
+    }
   }
 }
 
 const TABS = [['day', 'Day'], ['week', 'Week'], ['month', 'Month'], ['all', 'All']];
-async function openRanking(kind = 'day') {
+const CATS = [['score', 'Score'], ['speed', 'Speed'], ['moves', 'Moves']];
+async function openRanking(kind = 'day', cat = 'score') {
   const rk = await ranking();
   if (!rk) return;
   const token = ++rankToken;
@@ -463,20 +478,24 @@ async function openRanking(kind = 'day') {
     close: () => closeSheet(),
     play: () => { store.settings.mode = 'daily'; persist(); confirmNew(() => startNew()); },
   };
-  TABS.forEach(([k]) => { acts[`t-${k}`] = () => openRanking(k); });
+  TABS.forEach(([k]) => { acts[`t-${k}`] = () => openRanking(k, cat); });
+  CATS.forEach(([c]) => { acts[`c-${c}`] = () => openRanking(kind, c); });
+  const seg = (items, cur, pre) => `<div class="seg tabs">${items.map(([k, l]) => `<button${k === cur ? ' class="on"' : ''} data-act="${pre}-${k}">${l}</button>`).join('')}</div>`;
   const frame = (body) => `<h2>Ranking</h2><p>${periodLabel(kind, day)}</p>
-    <div class="seg tabs">${TABS.map(([k, l]) => `<button${k === kind ? ' class="on"' : ''} data-act="t-${k}">${l}</button>`).join('')}</div>
+    ${seg(CATS, cat, 'c')}${seg(TABS, kind, 't')}
     ${body}
     <div class="btns"><button data-act="play">${mode === 'daily' ? 'New Daily Game' : "Play Today's Daily"}</button><button class="sub" data-act="close">Close</button></div>`;
   sheet(frame('<div class="spin"></div>'), acts, true);
   let rows, me;
-  try { [rows, me] = await Promise.all([rk.topScores(kind, day, 30), rk.me()]); } catch {
+  try { [rows, me] = await Promise.all([rk.topScores(kind, day, 30, cat), rk.me()]); } catch {
     if (token === rankToken) sheet(frame("<p>Couldn't load the ranking right now.</p>"), acts, true);
     return;
   }
   if (token !== rankToken) return; // 別のタブに切り替わった
+  const main = (r) => (cat === 'speed' ? fmt(r.time * 1000) : cat === 'moves' ? `${r.moves}` : `${r.score}`);
+  const sub = (r) => (cat === 'speed' ? `${r.moves} moves · ${r.score} pts` : cat === 'moves' ? `${fmt(r.time * 1000)} · ${r.score} pts` : `${fmt(r.time * 1000)} · ${r.moves} moves`);
   const list = rows.length
-    ? rows.map((r, i) => `<div class="rk${r.uid === me ? ' me' : ''}"><b>${i + 1}</b><span>${esc(r.name)}<small>${fmt(r.time * 1000)} · ${r.moves} moves${kind === 'day' ? '' : ` · ${fmtDay(r.day)}`}</small></span><b>${r.score}</b></div>`).join('')
+    ? rows.map((r, i) => `<div class="rk${r.uid === me ? ' me' : ''}"><b>${i + 1}</b><span>${esc(r.name)}<small>${sub(r)}${kind === 'day' ? '' : ` · ${fmtDay(r.day)}`}</small></span><b>${main(r)}</b></div>`).join('')
     : `<p>No scores ${kind === 'all' ? 'yet' : 'in this period yet'}. Be the first!</p>`;
   sheet(frame(`<div class="rank-list">${list}</div>`), acts, true);
 }
@@ -617,7 +636,7 @@ function openMenu() {
     <div class="row"><span>Sound</span><span class="seg"><button${seg(se.sound)} data-act="snd-on">On</button><button${seg(!se.sound)} data-act="snd-off">Off</button></span></div>
     <div class="row"><span>Haptics</span><span class="seg"><button${seg(se.vibrate)} data-act="vib-on">On</button><button${seg(!se.vibrate)} data-act="vib-off">Off</button></span></div>
     <div class="btns" style="margin-top:10px">${RANK_ON ? '<button data-act="rank">Ranking</button>' : ''}<button class="${RANK_ON ? 'sub' : ''}" data-act="close">Close</button></div>`, {
-    rank: () => openRanking('day'),
+    rank: () => openRanking('day', 'score'),
     'm-random': () => setMode('random'), 'm-daily': () => setMode('daily'),
     'snd-on': () => { se.sound = true; persist(); unlockAudio(); openMenu(); },
     'snd-off': () => { se.sound = false; persist(); openMenu(); },
@@ -657,21 +676,22 @@ function dropTarget(headX, headY) {
 let drag = null;
 board.addEventListener('contextmenu', (e) => e.preventDefault());
 board.addEventListener('pointerdown', (e) => {
+  if (drag && performance.now() - drag.t > 1500) drag = null; // pointerup を取りこぼした古い状態でボードが固まらないように
   if (busy || over || sheetOpen || drag) return;
   unlockAudio();
   const cardEl = e.target.closest('.card');
   if (!cardEl) {
-    if (e.target.closest('#slot-stock')) drag = { tap: 'stock', sx: e.clientX, sy: e.clientY, moved: false, pid: e.pointerId };
+    if (e.target.closest('#slot-stock')) drag = { tap: 'stock', sx: e.clientX, sy: e.clientY, moved: false, pid: e.pointerId, t: performance.now() };
     return;
   }
   const L = locate(Number(cardEl.dataset.id));
   if (!L) return;
-  if (L.zone === 'stock') { drag = { tap: 'stock', sx: e.clientX, sy: e.clientY, moved: false, pid: e.pointerId }; return; }
+  if (L.zone === 'stock') { drag = { tap: 'stock', sx: e.clientX, sy: e.clientY, moved: false, pid: e.pointerId, t: performance.now() }; return; }
   const ids = cardsAt(state, L);
   if (!ids.length) return;
   const r = board.getBoundingClientRect();
   drag = {
-    from: L, ids, sx: e.clientX, sy: e.clientY, moved: false, pid: e.pointerId,
+    from: L, ids, sx: e.clientX, sy: e.clientY, moved: false, pid: e.pointerId, t: performance.now(),
     base: ids.map((id) => ({ ...pos.get(id) })), left: r.left, top: r.top,
   };
   try { board.setPointerCapture(e.pointerId); } catch { /* 無視 */ }
@@ -718,6 +738,20 @@ function endDrag(e, cancelled) {
 }
 board.addEventListener('pointerup', (e) => endDrag(e, false));
 board.addEventListener('pointercancel', (e) => endDrag(e, true));
+board.addEventListener('lostpointercapture', (e) => endDrag(e, true));
+// 指がボードの外で離れたり、システムにジェスチャを奪われても状態を残さない
+window.addEventListener('pointerup', (e) => endDrag(e, false));
+window.addEventListener('pointercancel', (e) => endDrag(e, true));
+
+// ダブルタップで画面全体が上にずれる(ページスクロール/ズーム)のを止める
+let lastTouchEnd = 0;
+board.addEventListener('touchend', (e) => { const n = Date.now(); if (n - lastTouchEnd < 350) e.preventDefault(); lastTouchEnd = n; }, { passive: false });
+document.addEventListener('dblclick', (e) => e.preventDefault());
+document.addEventListener('touchmove', (e) => { if (!e.target.closest('.rank-list, #sheet')) e.preventDefault(); }, { passive: false });
+const pinTop = () => { if (window.scrollX || window.scrollY) window.scrollTo(0, 0); document.scrollingElement && (document.scrollingElement.scrollTop = 0); };
+window.addEventListener('scroll', pinTop, { passive: true });
+window.visualViewport?.addEventListener('scroll', pinTop);
+window.visualViewport?.addEventListener('resize', pinTop);
 
 $('#btn-undo').addEventListener('click', () => { unlockAudio(); undo(); });
 $('#btn-giveup').addEventListener('click', () => { unlockAudio(); giveUp(); });

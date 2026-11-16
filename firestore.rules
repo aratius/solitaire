@@ -12,13 +12,13 @@ service cloud.firestore {
         && d.day is string && d.day.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
         && d.week is string && d.week.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
         && d.month is string && d.month == d.day[0:7]
-        // score formula: max(0, 10000 - sec*10 - moves*20)
-        && (d.score == 10000 - d.time * 10 - d.moves * 20
-            || (d.score == 0 && 10000 - d.time * 10 - d.moves * 20 <= 0))
+        // Bests are independent. The score can never exceed what the best time and fewest moves allow.
+        && d.score >= 0 && d.score <= 10000
+        && (d.score == 0 || d.score <= 10000 - d.time * 10 - d.moves * 20)
         && d.at == request.time;
     }
 
-    // One document per player per day. Anyone can read; only the owner can write, and a post can only be improved.
+    // One document per player per day. Anyone can read; only the owner can write, and personal bests can only improve.
     match /scores/{id} {
       allow read: if true;
       allow create: if request.auth != null
@@ -28,7 +28,9 @@ service cloud.firestore {
         && resource.data.uid == request.auth.uid
         && validEntry(request.resource.data, request.auth.uid)
         && request.resource.data.day == resource.data.day
-        && request.resource.data.score > resource.data.score;
+        && request.resource.data.score >= resource.data.score
+        && request.resource.data.time <= resource.data.time
+        && request.resource.data.moves <= resource.data.moves;
       allow delete: if false;
     }
   }

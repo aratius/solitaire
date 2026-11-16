@@ -29,18 +29,41 @@ export function periodLabel(kind, day) {
   return 'All time';
 }
 
-// One row per player (their best entry), best first: score desc, then time asc, then moves asc.
-export function rankRows(rows, n = Infinity) {
-  const better = (a, b) => b.score - a.score || a.time - b.time || a.moves - b.moves; // <0: a is better
+// Ranking categories. Each document holds the player's best score (highest), fastest time and fewest moves for the day.
+export const CATS = ['score', 'speed', 'moves'];
+const FIELD = { score: 'score', speed: 'time', moves: 'moves' };
+export const catField = (cat) => FIELD[cat] || 'score';
+// <0 when row a ranks above row b in this category (ties fall back to the other measures).
+function better(cat) {
+  if (cat === 'speed') return (a, b) => a.time - b.time || b.score - a.score || a.moves - b.moves;
+  if (cat === 'moves') return (a, b) => a.moves - b.moves || a.time - b.time || b.score - a.score;
+  return (a, b) => b.score - a.score || a.time - b.time || a.moves - b.moves;
+}
+
+// One row per player (their best entry in the category), best first.
+export function rankRows(rows, n = Infinity, cat = 'score') {
+  const cmp = better(cat);
   const best = new Map();
   for (const r of rows) {
     const cur = best.get(r.uid);
-    if (!cur || better(r, cur) < 0) best.set(r.uid, r);
+    if (!cur || cmp(r, cur) < 0) best.set(r.uid, r);
   }
-  return [...best.values()].sort(better).slice(0, n);
+  return [...best.values()].sort(cmp).slice(0, n);
 }
 
-// Rank (1-based) that `score` would hold among the given rows; other players only.
-export function rankIn(rows, score, uid) {
-  return 1 + rankRows(rows).filter((r) => r.uid !== uid && r.score > score).length;
+// Rank (1-based) that `value` would hold in the category among the given rows; other players only.
+export function rankIn(rows, value, uid, cat = 'score') {
+  const f = catField(cat);
+  const ahead = (r) => (cat === 'score' ? r[f] > value : r[f] < value);
+  return 1 + rankRows(rows, Infinity, cat).filter((r) => r.uid !== uid && ahead(r)).length;
+}
+
+// Merge two sets of personal bests (highest score, fastest time, fewest moves).
+export function mergeBests(a, b) {
+  if (!a) return { ...b };
+  return { score: Math.max(a.score, b.score), time: Math.min(a.time, b.time), moves: Math.min(a.moves, b.moves) };
+}
+// True when `now` beats `then` in at least one category (then may be missing).
+export function improved(now, then) {
+  return !then || now.score > then.score || now.time < then.time || now.moves < then.moves;
 }

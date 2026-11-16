@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { monthKey, weekStart, weekEnd, periodLabel, rankRows, rankIn } from '../periods.js';
+import { monthKey, weekStart, weekEnd, periodLabel, rankRows, rankIn, mergeBests, improved } from '../periods.js';
 
 test('weeks run Monday to Sunday', () => {
   assert.equal(weekStart('2026-11-15'), '2026-11-09'); // Sunday belongs to the week that began Monday the 9th
@@ -43,4 +43,26 @@ test('rankIn counts only other players with a higher score', () => {
   assert.equal(rankIn(rows, 7000, 'me'), 3);
   assert.equal(rankIn(rows, 9500, 'me'), 1);
   assert.equal(rankIn([], 100, 'me'), 1);
+});
+
+test('rankRows and rankIn work per category', () => {
+  const rows = [
+    { uid: 'a', score: 9000, time: 90, moves: 80 },
+    { uid: 'b', score: 8000, time: 60, moves: 120 },
+    { uid: 'c', score: 7000, time: 120, moves: 60 },
+  ];
+  assert.deepEqual(rankRows(rows, 9, 'speed').map((r) => r.uid), ['b', 'a', 'c']);
+  assert.deepEqual(rankRows(rows, 9, 'moves').map((r) => r.uid), ['c', 'a', 'b']);
+  assert.equal(rankIn(rows, 70, 'me', 'speed'), 2);
+  assert.equal(rankIn(rows, 50, 'me', 'moves'), 1);
+  assert.equal(rankIn(rows, 8500, 'me', 'score'), 2);
+});
+
+test('mergeBests and improved', () => {
+  const a = { score: 8000, time: 90, moves: 100 };
+  assert.deepEqual(mergeBests(a, { score: 7000, time: 80, moves: 120 }), { score: 8000, time: 80, moves: 100 });
+  assert.deepEqual(mergeBests(undefined, a), a);
+  assert.equal(improved(a, a), false);
+  assert.equal(improved({ ...a, moves: 99 }, a), true);
+  assert.equal(improved(a, undefined), true);
 });
