@@ -46,10 +46,22 @@ let actx = null;
 function unlockAudio() {
   if (!store.settings.sound) return;
   try {
+    // iOS: マナースイッチ(消音)でもWeb Audioを鳴らす。対応していれば再生カテゴリを playback にする
+    if (navigator.audioSession) navigator.audioSession.type = 'playback';
     actx ||= new (window.AudioContext || window.webkitAudioContext)();
-    if (actx.state === 'suspended') actx.resume();
+    // iOSのPWAでは 'suspended' 以外に 'interrupted' になることがある。running 以外なら毎回 resume する
+    if (actx.state !== 'running') actx.resume();
+    // 無音を1回鳴らして出力を確実に起こす
+    if (!unlockAudio.primed) {
+      unlockAudio.primed = true;
+      const buf = actx.createBuffer(1, 1, 22050), src = actx.createBufferSource();
+      src.buffer = buf; src.connect(actx.destination); src.start(0);
+    }
   } catch { /* 無音で続行 */ }
 }
+// iOSは pointerdown ではなく touchend / click を「ユーザー操作」と認める。どれかで必ず解錠する
+['touchend', 'click', 'pointerup', 'keydown'].forEach((t) => document.addEventListener(t, unlockAudio, { capture: true, passive: true }));
+document.addEventListener('visibilitychange', () => { if (!document.hidden) unlockAudio(); });
 function tone(f, d = 0.08, type = 'sine', v = 0.12, slideTo = null, delay = 0) {
   if (!store.settings.sound || !actx) return;
   const t = actx.currentTime + delay;
