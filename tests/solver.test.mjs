@@ -52,3 +52,33 @@ test('時間切れは timeout を返し、制限時間を大きく超えない',
   assert.ok(['solved', 'timeout', 'exhausted'].includes(r.status));
   assert.ok(r.ms < 2500, `took ${r.ms}`);
 });
+
+// ---- 証明モード(complete): 「勝てない」は誤って出してはいけない ----
+import { move, draw, canMove, isStuck } from '../logic.js';
+test('complete mode proves unwinnable positions and never contradicts a found solution', () => {
+  let seed = 4242; const rnd = () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296;
+  let proven = 0;
+  for (let i = 1; i <= 40; i++) {
+    const s = newGame(i * 31337);
+    const limit = 40 + Math.floor(rnd() * 400);
+    for (let steps = 0; steps < limit && !isWon(s) && !isStuck(s); steps++) {
+      const legal = [];
+      const froms = [{ zone: 'waste' }];
+      for (let c = 0; c < 7; c++) for (let k = 0; k < s.tab[c].length; k++) if (s.up[s.tab[c][k]]) froms.push({ zone: 'tab', col: c, idx: k });
+      for (const f of froms) {
+        for (let p = 0; p < 4; p++) if (canMove(s, f, { zone: 'found', pile: p })) legal.push([f, { zone: 'found', pile: p }, 3]);
+        for (let c = 0; c < 7; c++) if (canMove(s, f, { zone: 'tab', col: c })) legal.push([f, { zone: 'tab', col: c }, 1]);
+      }
+      legal.push(['draw', null, 0.6]);
+      let r = rnd() * legal.reduce((a, m) => a + m[2], 0), pick = legal[0];
+      for (const m of legal) { r -= m[2]; if (r <= 0) { pick = m; break; } }
+      if (pick[0] === 'draw') draw(s); else move(s, pick[0], pick[1]);
+    }
+    const r = solve(s, { complete: true, timeLimitMs: 1500 });
+    if (r.status === 'unwinnable') {
+      proven++;
+      assert.notEqual(solve(s, { timeLimitMs: 4000, improveMs: 0 }).status, 'solved', `contradiction at deal ${i}`);
+    }
+  }
+  assert.ok(proven >= 5, `expected several proofs, got ${proven}`);
+});

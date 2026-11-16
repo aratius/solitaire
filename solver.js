@@ -16,10 +16,14 @@ function cyrb53(str) {
 }
 const clock = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
 
-// 戻り値: { status: 'solved'|'exhausted'|'timeout', actions, length, nodes, ms }
+// opts.complete: 「勝てない」の証明用。枝刈りを健全なものだけにし(分割移動・上がり札からの戻しも探索)、
+//   探索を最後までやり切って解が無ければ status:'unwinnable' を返す。時間・状態数の上限に当たれば 'timeout'(=不明)。
+// 戻り値: { status: 'solved'|'unwinnable'|'exhausted'|'timeout', actions, length, nodes, ms }
 export function solve(game, opts = {}) {
   const timeLimit = opts.timeLimitMs ?? 15000;
-  const improveMs = opts.improveMs ?? 3000;
+  const complete = !!opts.complete;
+  const improveMs = complete ? 0 : (opts.improveMs ?? 3000);
+  const maxStates = opts.maxStates ?? 900000;
   const t0 = clock();
   let deadline = t0 + timeLimit;
 
@@ -130,6 +134,7 @@ export function solve(game, opts = {}) {
     };
     // 山札側の札が置ける先(分割移動の可否判定に使う)
     const placeable = (card) => {
+      if (complete) return true; // 証明モードでは分割移動を枝刈りしない
       for (const d of s.D) if (rank(d) === rank(card) - 1 && isRed(d) !== isRed(card)) return true;
       for (let c = 0; c < 7; c++) {
         const u = s.ups[c];
@@ -159,6 +164,18 @@ export function solve(game, opts = {}) {
       if (canFound(s, card)) { const m = deckTo(s, j, { zone: 'found', pile: suit(card) }); m.pri = 1 + m.acts.length * 0.001; moves.push(m); }
       for (const b of targets(card)) { const m = deckTo(s, j, { zone: 'tab', col: b }); m.pri = 2 + m.acts.length * 0.01; moves.push(m); }
     }
+    if (complete) { // 上がり札の一番上を場札へ戻す手(まれに必要)
+      for (let p = 0; p < 4; p++) {
+        if (s.f[p] === 0) continue;
+        const card = p * 13 + s.f[p] - 1;
+        for (const b of targets(card)) {
+          const ns = clone(s);
+          ns.f[p]--; ns.fc--;
+          ns.ups[b] = s.ups[b].concat([card]);
+          moves.push({ s: ns, acts: [moveAct(card, { zone: 'tab', col: b })], pri: 5 });
+        }
+      }
+    }
     if (noise) for (const m of moves) m.pri += Math.random() * noise;
     moves.sort((x, y) => x.pri - y.pri);
     return moves;
@@ -167,7 +184,8 @@ export function solve(game, opts = {}) {
   const key = (s) => {
     let k = `${s.p}|${s.f[0]},${s.f[1]},${s.f[2]},${s.f[3]}`;
     for (let c = 0; c < 7; c++) k += `|${s.down[c]}:${s.ups[c].join(',')}`;
-    return cyrb53(k);
+    // 証明モードは衝突で誤って「勝てない」と言わないよう、2つのハッシュを連結する
+    return complete ? `${cyrb53(k)}.${cyrb53(k + '#')}` : cyrb53(k);
   };
 
   let best = Infinity, bestPath = null, nodes = 0, aborted = false, firstAt = null;
@@ -195,9 +213,9 @@ export function solve(game, opts = {}) {
     if (g + (52 - s.fc) >= best) { path.length = mark; return; }
     const h = key(s);
     const prev = visited.get(h);
-    if (prev !== undefined && prev <= g) { path.length = mark; return; }
+    if (prev !== undefined && (complete || prev <= g)) { path.length = mark; return; }
     visited.set(h, g);
-    if (visited.size > 2500000) visited = new Map();
+    if (visited.size > (complete ? maxStates : 2500000)) { if (complete) { capHit = true; aborted = true; return; } visited = new Map(); }
     const moves = gen(s);
     for (const m of moves) {
       if (aborted) break;
@@ -210,17 +228,18 @@ export function solve(game, opts = {}) {
   };
 
   // 重い裾野を避けるため、ノード上限を倍々に増やしながら順序を揺らして再試行する
-  let cap = 120000;
+  let cap = complete ? Infinity : 120000;
   for (let attempt = 0; ; attempt++) {
-    noise = attempt === 0 ? 0 : (attempt < 3 ? 0.8 : 2.2);
+    noise = complete || attempt === 0 ? 0 : (attempt < 3 ? 0.8 : 2.2);
     nodeCap = cap; attemptNodes = 0; capHit = false; aborted = false;
     visited = new Map();
     dfs(root, 0);
-    if (!capHit) break;           // 時間切れ or 探索完了 or 解あり
+    if (!capHit || complete) break; // 時間切れ or 探索完了 or 解あり(証明モードは1回だけ)
     if (clock() > deadline) break;
     cap = Math.min(cap * 1.6, 3000000);
   }
   const ms = clock() - t0;
   if (bestPath) return { status: 'solved', actions: bestPath, length: best, nodes, ms };
-  return { status: clock() > deadline || capHit ? 'timeout' : 'exhausted', actions: [], length: 0, nodes, ms };
+  const incomplete = clock() > deadline || capHit || aborted;
+  return { status: incomplete ? 'timeout' : (complete ? 'unwinnable' : 'exhausted'), actions: [], length: 0, nodes, ms };
 }

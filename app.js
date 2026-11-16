@@ -204,6 +204,7 @@ function startNew(seed) {
   state = newGame(seed);
   history = []; over = false; counted = false; assisted = false;
   clearTimeout(demo?.timer); demo = null; solveToken++;
+  proof.token++; proof.w?.terminate(); proof.w = null; clearTimeout(proof.timer);
   $('#app').classList.remove('demo'); setSpeed(1);
   clock.acc = 0; clock.t0 = null;
   busy = true;
@@ -245,6 +246,7 @@ function afterAction() {
   if (isWon(state)) return win();
   if (canAutoFinish(state)) return autoFinish();
   if (isStuck(state)) return stuck();
+  checkDead();
 }
 
 function doDraw(opts = {}) {
@@ -300,6 +302,7 @@ function undo() {
   sfx.place();
   applyLayout();
   saveGame(); updateHud();
+  checkDead();
 }
 
 function autoFinish() {
@@ -380,7 +383,31 @@ function cascade() {
   });
 }
 
-function stuck() {
+// 「もう絶対に勝てない」を、完全探索で証明できた瞬間に終わらせる。証明できない間(不明)はゲームを続ける。
+const proof = { w: null, token: 0, timer: null };
+function checkDead() {
+  clearTimeout(proof.timer);
+  const token = ++proof.token;
+  proof.w?.terminate(); proof.w = null;
+  if (over || demo || assisted || !state || isWon(state) || typeof Worker === 'undefined') return;
+  proof.timer = setTimeout(() => {
+    if (token !== proof.token || over) return;
+    const game = cloneState(state);
+    try {
+      const w = new Worker('solver-worker.js', { type: 'module' });
+      proof.w = w;
+      w.onmessage = (e) => {
+        if (token !== proof.token) return;
+        w.terminate(); proof.w = null;
+        if (e.data.status === 'unwinnable' && !over && !demo && !sheetOpen) stuck(true);
+      };
+      w.onerror = () => { w.terminate(); if (proof.w === w) proof.w = null; };
+      w.postMessage({ game, opts: { complete: true, timeLimitMs: 3000, maxStates: 500000 } });
+    } catch { /* 無視 */ }
+  }, 350);
+}
+function stuck(proven) {
+  proof.token++; proof.w?.terminate(); proof.w = null; clearTimeout(proof.timer);
   over = true; busy = true;
   clockPause();
   store.save = null; persist();
@@ -388,7 +415,7 @@ function stuck() {
   layer.classList.add('dim');
   sfx.stuck(); buzz([30, 60, 30]);
   setTimeout(() => {
-    sheet(`<h2>No Moves Left</h2><p>You've been through the whole deck and there are no moves left.</p>
+    sheet(`<h2>${proven ? 'No Winning Line' : 'No Moves Left'}</h2><p>${proven ? 'The computer checked every possible line from here. This deal can no longer be won.' : "You've been through the whole deck and there are no moves left."}</p>
       <div class="btns"><button data-act="new">New Game</button>
       <button class="sub" data-act="retry">Retry This Deal</button>
       <button class="sub" data-act="view">View Board</button></div>`, {
@@ -526,7 +553,12 @@ function startSolve() {
   });
   const game = cloneState(state);
   const opts = { timeLimitMs: 20000, improveMs: 3000 };
-  const finish = (r) => { if (token !== solveToken) return; worker?.terminate(); worker = null; onSolved(r); };
+  const finish = (r) => {
+    if (token !== solveToken) return;
+    worker?.terminate(); worker = null;
+    if (r.status === 'solved') return onSolved(r);
+    proveFull(game, token); // 解が見つからないときは、本当に勝てないのか完全探索で確かめる
+  };
   const fallback = () => { worker?.terminate(); worker = null; setTimeout(() => finish(solve(game, { timeLimitMs: 5000, improveMs: 1000 })), 60); };
   try {
     worker = new Worker('solver-worker.js', { type: 'module' });
@@ -535,11 +567,24 @@ function startSolve() {
     worker.postMessage({ game, opts });
   } catch { fallback(); }
 }
+function proveFull(game, token) {
+  sheet(`<h2>Checking…</h2><p>The computer is checking every possible line to see whether this deal can still be won. This can take up to about 20 seconds.</p>
+    <div class="spin"></div><div class="btns"><button class="sub" data-act="cancel">Cancel</button></div>`, {
+    cancel: () => { solveToken++; worker?.terminate(); worker = null; closeSheet(); },
+  });
+  const done = (r) => { if (token !== solveToken) return; worker?.terminate(); worker = null; onSolved(r); };
+  try {
+    worker = new Worker('solver-worker.js', { type: 'module' });
+    worker.onmessage = (e) => done(e.data);
+    worker.onerror = () => done({ status: 'timeout' });
+    worker.postMessage({ game, opts: { complete: true, timeLimitMs: 20000, maxStates: 500000 } });
+  } catch { done({ status: 'timeout' }); }
+}
 function onSolved(r) {
   if (r.status === 'solved') { closeSheet(true); startDemo(r.actions); return; }
-  const exhausted = r.status === 'exhausted';
-  sheet(`<h2>${exhausted ? 'Probably Unwinnable' : 'No Solution Found'}</h2>
-    <p>${exhausted ? 'The computer searched everything it tried and found no way to win from here.' : "The computer couldn't find a winning line in time. This deal may not be winnable."}</p>
+  const exhausted = r.status === 'unwinnable';
+  sheet(`<h2>${exhausted ? 'Unwinnable' : 'No Solution Found'}</h2>
+    <p>${exhausted ? 'The computer checked every possible line. There is no way to win from here.' : "The computer couldn't find a winning line in time. This deal may not be winnable."}</p>
     <div class="btns"><button data-act="keep">Keep Playing</button><button class="sub" data-act="new">New Game</button></div>`, {
     keep: () => closeSheet(), new: () => startNew(),
   });
@@ -784,6 +829,7 @@ function boot() {
     updateHud();
     if (canAutoFinish(state)) autoFinish();
     else if (!isWon(state) && isStuck(state)) stuck();
+    else checkDead();
   } else {
     store.save = null;
     startNew();
@@ -795,4 +841,4 @@ function boot() {
 requestAnimationFrame(boot);
 
 // テスト用フック
-window.__sol = { get state() { return state; }, get over() { return over; }, startNew, store: () => store };
+window.__sol = { get state() { return state; }, get over() { return over; }, startNew, checkDead, store: () => store };
