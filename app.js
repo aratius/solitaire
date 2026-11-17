@@ -210,8 +210,8 @@ function startNew(seed) {
   closeSheet(true);
   if (seed === undefined) {
     dateKey = todayKey();
-    mode = store.settings.mode;
-    seed = mode === 'daily' ? seedFromString(`solitaire-${dateKey}`) : randomSeed();
+    mode = 'random';
+    seed = randomSeed();
   }
   state = newGame(seed);
   history = []; over = false; counted = false; assisted = false;
@@ -293,7 +293,7 @@ function doMove(from, to, opts = {}) {
   const r = move(state, from, to);
   if (!r.ok) return false;
   history.push(snap);
-  if (history.length > 300) history.shift();
+  if (history.length > 1) history.shift(); // Undoは1手前だけ
   if (!opts.demo) markStarted();
   liftThenSettle(r.ids); pop(r.ids);
   if (to.zone === 'found') sfx.found(state.found[to.pile].length); else sfx.place();
@@ -440,7 +440,7 @@ function stuck(proven) {
 
 function showResult(sec, moves, score, rec, post) {
   const flag = (b) => (b ? '<i class="new">NEW</i> ' : '');
-  const m = mode === 'daily' ? `Daily ${dateKey}` : 'Random';
+  const m = 'Ranked game';
   const canPost = RANK_ON && !assisted && !!post;
   sheet(`<h2>You Win!</h2><p>${m}</p><div class="big">${score}</div>
     <div class="grid"><div>Time<b>${flag(rec.time)}${fmt(sec * 1000)}</b></div><div>Moves<b>${flag(rec.moves)}${moves}</b></div></div>
@@ -533,7 +533,7 @@ async function openRanking(kind = 'day', cat = 'score') {
   const day = todayKey();
   const acts = {
     close: () => closeSheet(),
-    play: () => { store.settings.mode = 'daily'; persist(); confirmNew(() => startNew()); },
+    play: () => confirmNew(() => startNew()),
   };
   TABS.forEach(([k]) => { acts[`t-${k}`] = () => openRanking(k, cat); });
   CATS.forEach(([c]) => { acts[`c-${c}`] = () => openRanking(kind, c); });
@@ -541,7 +541,7 @@ async function openRanking(kind = 'day', cat = 'score') {
   const frame = (body) => `<h2>Ranking</h2><p>${periodLabel(kind, day)}</p>
     ${seg(CATS, cat, 'c')}${seg(TABS, kind, 't')}
     ${body}
-    <div class="btns"><button data-act="play">${mode === 'daily' ? 'New Daily Game' : "Play Today's Daily"}</button><button class="sub" data-act="close">Close</button></div>`;
+    <div class="btns"><button data-act="play">New Game</button><button class="sub" data-act="close">Close</button></div>`;
   sheet(frame('<div class="spin"></div>'), acts, true);
   let rows, me;
   try { [rows, me] = await Promise.all([rk.topScores(kind, day, 30, cat), rk.me()]); } catch {
@@ -707,22 +707,16 @@ function openMenu() {
       <div>Best Score<b>${st.bestScore ?? '-'}</b></div><div>Best Time<b>${st.bestTime === null ? '-' : fmt(st.bestTime * 1000)}</b></div>
       <div>Fewest Moves<b>${st.bestMoves ?? '-'}</b></div><div>Today's Best<b>${d ? d.score : '-'}</b></div>
     </div>
-    <div class="row"><span>Mode</span><span class="seg"><button${seg(se.mode === 'random')} data-act="m-random">Random</button><button${seg(se.mode === 'daily')} data-act="m-daily">Daily</button></span></div>
     <div class="row"><span>Sound</span><span class="seg"><button${seg(se.sound)} data-act="snd-on">On</button><button${seg(!se.sound)} data-act="snd-off">Off</button></span></div>
     <div class="row"><span>Haptics</span><span class="seg"><button${seg(se.vibrate)} data-act="vib-on">On</button><button${seg(!se.vibrate)} data-act="vib-off">Off</button></span></div>
     <div class="btns" style="margin-top:10px">${RANK_ON ? '<button data-act="rank">Ranking</button>' : ''}<button class="${RANK_ON ? 'sub' : ''}" data-act="close">Close</button></div>`, {
     rank: () => openRanking('day', 'score'),
-    'm-random': () => setMode('random'), 'm-daily': () => setMode('daily'),
     'snd-on': () => { se.sound = true; persist(); unlockAudio(); openMenu(); },
     'snd-off': () => { se.sound = false; persist(); openMenu(); },
     'vib-on': () => { se.vibrate = true; persist(); openMenu(); buzz(20); },
     'vib-off': () => { se.vibrate = false; persist(); openMenu(); },
     close: () => closeSheet(),
   }, true);
-}
-function setMode(m) {
-  if (store.settings.mode === m) return;
-  confirmNew(() => { store.settings.mode = m; persist(); startNew(); });
 }
 
 // ---------- 入力 ----------
@@ -849,7 +843,7 @@ function boot() {
   if (sv && validState(sv.state)) {
     state = sv.state;
     if (typeof state.moves !== 'number') state.moves = 0;
-    mode = sv.mode === 'daily' ? 'daily' : 'random';
+    mode = 'random';
     dateKey = typeof sv.dateKey === 'string' ? sv.dateKey : todayKey();
     counted = !!sv.counted;
     assisted = !!sv.assisted;
